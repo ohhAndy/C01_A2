@@ -2,44 +2,67 @@ name: CD Pipeline
 
 on:
   workflow_run:
-    workflows: ["CI/CD"] # Name must match your CI workflow name
+    workflows: ["CI/CD"] # Matches the name of the CI workflow
     types: [completed]
     branches: [main]
 
 jobs:
-  deploy-canary:
+  canary-to-production:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
       - name: Deploy Canary Release
         run: |
-          echo "Pulling latest image and deploying to canary environment..."
-          # In a real scenario, you would run the docker container on a specific 'canary' port
-          # docker run -d -p 5001:5000 --name backend-canary ${{ secrets.DOCKER_USERNAME }}/cicd-demo-backend:latest
+          echo "Pulling latest image and deploying to canary port 5001..."
+          docker pull ${{ secrets.DOCKER_USERNAME }}/cicd-demo-backend:latest
+          
+          # Start Canary container on port 5001 (mapping 5001:5000)
+          docker run -d --name backend-canary -p 5001:5000 ${{ secrets.DOCKER_USERNAME }}/cicd-demo-backend:latest
+          
+          # Wait for container to start up
+          sleep 10
+          docker ps
 
-  canary-analysis:
-    needs: deploy-canary
-    runs-on: ubuntu-latest
-    steps:
       - name: Execute Canary Analysis
         run: |
           echo "Starting Canary Analysis..."
-          # Automated check against the dummy endpoint
-          # Using localhost for demonstration; in prod, use the canary IP/URL
-          RESPONSE=$(curl -s "http://localhost:5000/api/health/canary-check?num1=5&num2=7" || echo "failed")
+          # Analyze the canary container by hitting the health check endpoint on its port (5001)
+          RESPONSE=$(curl -s "http://localhost:5001/api/health/canary-check?num1=5&num2=7" || echo "failed")
+          
+          echo "Response from Canary: $RESPONSE"
           
           if [[ "$RESPONSE" == *"\"sum\":12"* ]]; then
             echo "Canary Analysis Passed: 5 + 7 = 12"
           else
             echo "Canary Analysis Failed!"
+            docker stop backend-canary
+            docker rm backend-canary
             exit 1 # Stops the pipeline and reports failure
           fi
 
-  promotion:
-    needs: canary-analysis
-    runs-on: ubuntu-latest
-    steps:
       - name: Promote to Full Production
         run: |
-          echo "Canary successful. Promoting to 100% traffic..."
-          # Logic to replace production containers with the validated canary image
+          echo "Canary successful. Promoting to Production port 5000..."
+          
+          # Stop and remove any old production container (if exists)
+          docker stop backend-prod || true
+          docker rm backend-prod || true
+          
+          # Start Production container on port 5000
+          docker run -d --name backend-prod -p 5000:5000 ${{ secrets.DOCKER_USERNAME }}/cicd-demo-backend:latest
+          
+          # Clean up the canary container after successful promotion
+          docker stop backend-canary
+          docker rm backend-canary
+          
+          echo "Promotion Complete. Production is live on port 5000."
+          docker ps

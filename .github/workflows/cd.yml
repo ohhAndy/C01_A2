@@ -1,0 +1,45 @@
+name: CD Pipeline
+
+on:
+  workflow_run:
+    workflows: ["CI/CD"] # Name must match your CI workflow name
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy-canary:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy Canary Release
+        run: |
+          echo "Pulling latest image and deploying to canary environment..."
+          # In a real scenario, you would run the docker container on a specific 'canary' port
+          # docker run -d -p 5001:5000 --name backend-canary ${{ secrets.DOCKER_USERNAME }}/cicd-demo-backend:latest
+
+  canary-analysis:
+    needs: deploy-canary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute Canary Analysis
+        run: |
+          echo "Starting Canary Analysis..."
+          # Automated check against the dummy endpoint
+          # Using localhost for demonstration; in prod, use the canary IP/URL
+          RESPONSE=$(curl -s "http://localhost:5000/api/health/canary-check?num1=5&num2=7" || echo "failed")
+          
+          if [[ "$RESPONSE" == *"\"sum\":12"* ]]; then
+            echo "Canary Analysis Passed: 5 + 7 = 12"
+          else
+            echo "Canary Analysis Failed!"
+            exit 1 # Stops the pipeline and reports failure
+          fi
+
+  promotion:
+    needs: canary-analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote to Full Production
+        run: |
+          echo "Canary successful. Promoting to 100% traffic..."
+          # Logic to replace production containers with the validated canary image
